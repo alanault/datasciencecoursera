@@ -1,0 +1,221 @@
+---
+title: 'Practical Machine Learning: prediction assignment write-up'
+author: "Alan Ault"
+date: "22 February 2015"
+output: html_document
+---
+
+
+### Background  
+This paper aims to build a  model to predict the way ("class") in which a person lifted a barbell. To do this, the model uses accelerometer data with measurements from a belt, forearm, arm and dumb-bells. 
+
+Two data sets have been provided, a training set on which to build the model and a testing set of 20 observations to be correctly predicted.
+
+
+
+### Summary: Random Forest the most accurate model tested
+**- Random Forest provided the most accurate model; 100% accuracy on the validation data set  
+- Out of sample error is predicted to be under 0.13%  
+- k=5 fold cross-validation was used to protect against under-fitting  
+- Principal Component Analysis was used to reduce predictors to 20 features  **
+
+
+
+### Method and approach
+To build and test our model, we'll use the Caret package in R and the following process:  
+
+1. **Load data**: both training and test data  
+2. **Cross-validation**: split training data to provide a validation test set  
+3. **Explore data**: decide on features to be included in model  
+4. **Principal Component Analysis**: if necessary to reduce noise and number of features used  
+5. **Build models**: based on tree (rpart) and random forest (rf)  
+6. **Validate**: compare performance of each model, predict out of sample error and choose model
+7. **Predict**: use best model to predict test output  
+
+```{r echo=FALSE}
+# background stuff here
+# set wd
+setwd ("/Users/alanault/Documents/R/Coursera/machine_learning/Project/")
+```
+
+
+
+### Step 1: Load data
+Firstly, the Caret library was loaded and a random seed was set to ensure reproducibility, as we'll be taking random samples.
+
+The data was provided in two CSV files, which were loaded.
+```{r}
+set.seed (123)
+library (caret)
+```
+```{r cache=TRUE}
+# Load the data sets
+training <- read.csv ("pml-training.csv")
+test <- read.csv ("pml-testing.csv")
+```
+
+
+
+### Step 2: Cross validation approach: (k=5, crossfold)
+We cannot use the test data to validate our models, as this would lead to over-fitting and an optimistic view of model accuracy.
+
+Instead, we need to split training data into a training and test (validation) data set. For each model, we'll also use K-fold cross-validation with a k=5. This will help mitigate against additional over-fitting.
+
+```{r}
+# Creating our validation set for testing purposes
+
+# Use Caret to create random sampled data partition
+inTrain <- createDataPartition (y=training$classe, p=0.7, list=FALSE)
+training <- training [inTrain, ]
+validation <- training [-inTrain, ]
+```
+
+
+
+### Step 3: Explore data, picking the predictor features
+Initial exploration of the data set showed a large number of variables (160). This large number is likely to be too many to be easily interpretable. Instead, exploration was undertaken to see whether all the data was useful.
+
+```{r}
+dim (training)
+```
+
+Manual inspection of the data revealed that many columns contained completely blank, NA or Div/0 errors (see example summary below). 
+
+```{r}
+summary (training [ , c (14,17,89)])
+```
+
+Further inspection showed that these columns all had similar prefixes: skew, max, min etc. By searching (using grep) across the column names, we can create a index vector of columns to eliminate.
+
+```{r}
+# List of terms in columns we want to lose. Use "|" as an "OR" seperator
+killTerms <- paste ("kurt", "skew", "max", "min", "ampl", "var", "avg", "std","user_name", "timestamp","X", "window", "problem", sep="|")
+
+# Find out which columns match our terms
+index <- grep (killTerms, names (training))
+# Remove the terms and create a new training set
+training2 <- training [ , -index] 
+```
+
+
+
+### Step 4: PCA to further reduce number of features and noise
+Removal of terms with little information reduced the number of features, however we still have 53 features (see below). 
+
+```{r}
+dim (training2)
+```
+
+To further simplify the number of terms used, Principal Component Analysts (PCA) was used. This is a technique which can reduce the number of features used, while improving accuracy. PCA seeks to reduce the terms, while retaining the maximum amount of information available with the full set of terms.
+
+While we could run this process as part of the model fitting, it's done here, so we can reuse the PCA grid when we use our validation and testing later
+
+```{r cache=TRUE}
+# Create a PCA grid, dropping the "Class" predictor feature
+pcaGrid <- preProcess (training2 [, -53], method="pca")
+pcaGrid # tells us about the PCA we created
+```
+
+Our PCA grid reduces the number of features from 53 to 25, while capturing 95% of the variance. We will therefore use this for our analysis. The next step is to create new training set, based on the PCA weightings
+
+```{r cache=TRUE}
+trainingPCA <- predict (pcaGrid, training2 [ , -53])
+```
+
+
+
+### Step 5: Create models
+Now that we've created a dataset, we're going to generate a number of models to compare performance. As the modelling challenge is classification, two approaches/libraries are suggested:  
+*1. Conditional tree (rpart)*  
+*2. Random Forest (rf)*  
+
+**Model 1: rpart classification tree**
+```{r cache=TRUE}
+# Fit a tree-based model. Predicts value from training2, using our PCA data
+# Using trainControl to add k=5 fold cross validation
+modelrpart <- train (training2 [,53] ~., method="rpart", 
+                     data=trainingPCA,
+                     trControl=trainControl (method="cv", number=5))
+```
+
+**Model 2: random forest classification tree**
+```{r cache=TRUE}
+# Fit a Random Forest model. Uses 50 trees for speed. 
+# More accuracy can be obtained by increasing the number of trees, e.g. 500
+modelrf <- train (training2 [,53]~., method="rf", 
+                  data=trainingPCA,
+                  ntree=500,
+                  trControl=trainControl (method="cv", number=5))
+```
+
+
+
+### Step 6: Evaluate model performance
+We now use the models we've built to predict our validation data and determine the our of sample accuracy we would expect to see.
+
+We need to perform the same transformations on our validation data set that we did on training data (i.e. filter by features, PCA).   
+
+```{r cache=TRUE}
+# First, remove feature variables which are null/NA
+# We use the index we created in step 3
+validation2 <- validation [ , -index]
+
+# Lose the "classe" variable as that is what we're trying to predict!
+validation2 <- subset (validation2, select = -classe)
+
+# Transform with PCA weights
+validationPCA <- predict (pcaGrid, validation2)
+
+# Make predictions with both our models
+validation$rpart <- predict (modelrpart, newdata=validationPCA)
+validation$rf <- predict (modelrf, newdata=validationPCA)
+```
+
+We will use a Confusion Matrix to show the accuracy of each model. The key observations are:  
+
+- rPart accuracy is poor: 37%   
+- rPart failed to completely predict any classes correctly. Examination of the confusion matrix shows that it picked no B or C  
+- In contrast, the Random Forest was highly accurate, with 100% accuracy in the validation data  
+- Random Forest also shows a confidence interval of 99.87% to 100% accuracy, suggesting that with out of sample data, the random forest approach should be highly accurate  
+
+**This means we should expect out of sample error rate to be under 0.13%**
+
+The diagnostic output is shown below:
+```{r}
+# rPart
+# Diagnostics for our tree-based model
+confusionMatrix (validation$rpart, validation$classe)
+# Random Forest
+# Diagnostics for our random forest model
+confusionMatrix (validation$rf, validation$classe)
+```
+
+## Step 7: Test
+The final step is to use our chosen Random Forest model to predict the test data classes. We follow the same process as we did for the validation data set.
+
+```{r cache=TRUE}
+# Remove the features we don't want
+test2 <- test [, -index]
+
+# Remove problem_id field as is just a refernce field
+test2 <- subset (test2, select= - problem_id)
+
+# Use PCA weights to build a test dataset
+testPCA <- predict (pcaGrid, test2)
+
+# Make our predictions
+test$Class <- predict (modelrf, newdata=testPCA)
+
+# Our final output for submission
+test$Class
+
+```
+### Postscript: model predicted all test results correctly
+Submitting the final output submission showed that the Random Forest model had correctly predicted all 20 test cases, validating the high levels of accuracy we had predicted
+
+
+
+
+
+
+
